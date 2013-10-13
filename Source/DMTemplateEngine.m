@@ -337,6 +337,8 @@ DMTemplateBlockType;
 								// Content within a foreach block is rendered as a template itself.
 								DMTemplateEngine* engine = [DMTemplateEngine engineWithTemplate:blockContent];
 								engine.modifiers = self.modifiers;
+                                engine.beginProcessorMarker = self.beginProcessorMarker;
+                                engine.endProcessorMarker = self.endProcessorMarker;
 								for(NSUInteger i = 0; i < array.count; i++) {
 									id obj = [array objectAtIndex:i];
 									// Add the desired variable to the foreach block's 
@@ -352,7 +354,7 @@ DMTemplateBlockType;
 								}
 							}
 							break;
-						
+
 						case DMTemplateLogTagType: {
 								// If we are currently skipping content, don't log.
 								if(skipContent)
@@ -366,9 +368,7 @@ DMTemplateBlockType;
 								}
 								else {
 									// Statement (we assume) is a key-value path, find value and log that.
-									NSPredicate* predicate = [NSPredicate predicateWithFormat:[NSString stringWithFormat:@"(%@) == 0", statementContent]];
-									NSExpression* expression = [(NSComparisonPredicate*)predicate leftExpression];
-									NSLog(@"%@", [expression expressionValueWithObject:self.object context:nil]);
+                                    NSLog(@"%@", [self.object valueForKey:statementContent]);
 								}
 							
 								// Skip over a newline, if necessary.
@@ -380,17 +380,19 @@ DMTemplateBlockType;
 								// If we are currently skipping content, simply skip this value.
 								if(skipContent)
 									continue;
-
-								// Get key value for the specified key path. If a value is found, 
-								// append it to the result. We're also tricking NSPredicate into 
-								// using its built-in math expression parser so we can write math
-								// inline in our template.
-								NSPredicate* predicate = [NSPredicate predicateWithFormat:[NSString stringWithFormat:@"(%@) == 0", tagContent]];
-								NSExpression* expression = [(NSComparisonPredicate*)predicate leftExpression];
-								id keyValue = [expression expressionValueWithObject:self.object context:nil];
-								if(keyValue != nil) {
-									NSString* keyString = [keyValue description];
-									
+                            
+                                // Get key value for the specified key path.
+                                id keyValue = [self.object valueForKeyPath:tagContent];
+                            
+                                if (!keyValue) {
+                                    // No keyPath found - try an expression.
+                                    NSExpression *expression = [NSExpression expressionWithFormat:tagContent];
+                                    keyValue = [expression expressionValueWithObject:self.object context:nil];
+                                }
+                            
+                                NSString* keyString = (!keyValue || [keyValue isKindOfClass:[NSString class]]) ? keyValue : [NSString stringWithFormat:@"%@", keyValue];
+                            
+                                if (keyString) {
 									// Run through modifiers and apply.
 									for(NSString* modifier in tagInfo.modifiers) {
 										NSString*(^modifierBlock)(NSString*) = [self.modifiers objectForKey:modifier];
@@ -403,6 +405,9 @@ DMTemplateBlockType;
 								}
 							}
 							break;
+                            
+                        default:
+                            break;
 					}
 				}
 				@catch(id exception) {
@@ -554,8 +559,16 @@ DMTemplateBlockType;
 		else {
 			// Statement is (we assume) a key-value path, so try to get the value and make sure it is an array.
 			id keyValue = [self.object valueForKeyPath:statementKey];
-			if(keyValue != nil && [keyValue isKindOfClass:[NSArray class]])
+			if(keyValue != nil && [keyValue isKindOfClass:[NSArray class]]) {
 				array = (NSArray*)keyValue;
+            }
+			else if(keyValue != nil && [keyValue conformsToProtocol:@protocol(NSFastEnumeration)]) {
+                NSMutableArray *values = [NSMutableArray array];
+                for (id value in keyValue) {
+                    [values addObject:value];
+                }
+                array = values;
+            }
 		}
 	}
 	@catch(id exception) {
@@ -623,44 +636,44 @@ DMTemplateBlockType;
 
 - (DMTemplateTagType)_determineTemplateTagType:(NSString*)tag {
 	DMTemplateTagType tagType;
-	
-	if([tag isCaseInsensitiveLike:@"if*(*"]) {
+    
+    if ([[NSPredicate predicateWithFormat:@"SELF like 'if*(*'"] evaluateWithObject:tag]) {
 		// Tag is an if statement
 		// e.g. if(condition)
 		tagType = DMTemplateIfTagType;
 	}
 	else
-	if([tag isCaseInsensitiveLike:@"else"]) {
+    if ([[NSPredicate predicateWithFormat:@"SELF like 'else'"] evaluateWithObject:tag]) {
 		// Tag is a simple else statement
 		// e.g. else
 		tagType = DMTemplateElseTagType;
 	}
 	else
-	if([tag isCaseInsensitiveLike:@"elseif*(*"]) {
+    if ([[NSPredicate predicateWithFormat:@"SELF like 'elseif*(*'"] evaluateWithObject:tag]) {
 		// Tag is an alternative if statement
 		// e.g. elseif(condition)
 		tagType = DMTemplateElseIfTagType;
 	}
 	else
-	if([tag isCaseInsensitiveLike:@"endif"]) {
+    if ([[NSPredicate predicateWithFormat:@"SELF like 'endif'"] evaluateWithObject:tag]) {
 		// Tag is a closing if statement
 		// e.g. endif
 		tagType = DMTemplateEndIfTagType;
 	}
 	else
-	if([tag isCaseInsensitiveLike:@"foreach*(*"]) {
+    if ([[NSPredicate predicateWithFormat:@"SELF like 'foreach*(*'"] evaluateWithObject:tag]) {
 		// Tag is a foreach statement
 		// e.g. foreach(array)
 		tagType = DMTemplateForEachTagType;
 	}
 	else
-	if([tag isCaseInsensitiveLike:@"endforeach"]) {
+    if ([[NSPredicate predicateWithFormat:@"SELF like 'endforeach'"] evaluateWithObject:tag]) {
 		// Tag is a closing foreach statement
 		// e.g. endforeach
 		tagType = DMTemplateEndForEachTagType;
 	}
 	else
-	if([tag isCaseInsensitiveLike:@"log*(*"]) {
+    if ([[NSPredicate predicateWithFormat:@"SELF like 'log*(*'"] evaluateWithObject:tag]) {
 		// Tag is a log statement
 		// e.g. log
 		tagType = DMTemplateLogTagType;
@@ -859,12 +872,18 @@ DMTemplateBlockType;
 														@"#x0D", @"\r",
 														nil
 														];
-	
-	return [(NSString*)CFXMLCreateStringByEscapingEntities(kCFAllocatorDefault, (CFStringRef)string, (CFDictionaryRef)entities) autorelease];
+    
+    NSMutableString *escaped = [NSMutableString stringWithString:string];
+    
+    [entities enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+        [escaped replaceOccurrencesOfString:key withString:value options:NSLiteralSearch range:NSMakeRange(0, escaped.length)];
+    }];
+    
+    return escaped;
 }
 
 + (NSString*)_stringByAddingPercentEscapes:(NSString*)string {
-	return [(NSString*)CFURLCreateStringByAddingPercentEscapes(NULL, (CFStringRef)string, CFSTR(""), CFSTR("/"), kCFStringEncodingUTF8) autorelease];
+    return [string stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
 }
 
 + (NSString*)_stringByRemovingCharactersFromSet:(NSCharacterSet*)set string:(NSString*)string {
@@ -885,7 +904,7 @@ DMTemplateBlockType;
 
 + (void)_removeCharactersInSet:(NSCharacterSet*)set string:(NSMutableString*)string {
 	NSRange matchRange, searchRange, replaceRange;
-	unsigned int length;
+	NSUInteger length;
 	
 	length = [string length];
 	matchRange = [string rangeOfCharacterFromSet:set options:NSLiteralSearch range:NSMakeRange(0, length)];
